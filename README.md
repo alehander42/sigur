@@ -67,6 +67,11 @@ var q = await l();
 var qs = await cosn(q);
 await loop(qs);
 ```
+##usage
+
+```bash
+bin/sigur filename.js # saves output to filename.es7
+```
 
 ##convert back?
 
