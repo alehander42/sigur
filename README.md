@@ -48,13 +48,15 @@ async.waterfall([
 is converted to
 
 ```javascript
-function l(callback) {
+async function l() {
+  var q = await Person.find();
+  return q;
 }
 
 async function cosn(q) {
   return [2];
 }
-function loop(qs, callback) {
+async function loop(qs) {
   await qs.parallelEach(q => {
     Person.generateStuff(q);
   });

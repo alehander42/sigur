@@ -59,6 +59,7 @@ class AsyncTranslator
     else 
       asyncStatus = ''
       params = node.params
+      console.log(blockResult)
     argCode = _.map(params, this._source).join(', ')
     header = "#{asyncStatus}function #{node.id.name}(#{argCode}) {"
     "#{header}\n#{blockResult.code}}\n"
@@ -104,6 +105,7 @@ class AsyncTranslator
         sequence = node.arguments[0].name
         iterator = node.arguments[1].params[0].name
 
+        result.isAsync = true
         results.push("#{ind}await #{sequence}.parallelEach(#{iterator} => {#{blockCode}#{ind}});#{afterCode}")
       else if node.type == 'CallExpression' && node.callee.type == 'MemberExpression' &&
               node.callee.object.name == 'async' && node.callee.property.name == 'waterfall' # async watefall
@@ -111,7 +113,7 @@ class AsyncTranslator
       else if node.type == 'CallExpression' && this._isParallelCallback(lastArg)
         argCode = _.map(node.arguments.slice(0, -1), this._source).join('\n')
         results.push("#{ind}#{node.callee.source()}(#{argCode});")
-      else if node.type == 'CallExpression' && node.callee.name == @parallelCallback
+      else if node.type == 'CallExpression' && node.type == 'Identifier' && node.callee.name == @parallelCallback
         2 # TODO raise an exception depending on error model
       else if node.type == 'CallExpression' && this._isCallback(lastArg)
         unless lastArg.type == 'FunctionExpression'
