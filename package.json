@@ -1,0 +1,51 @@
+{
+  "name": "sigur",
+  "description": "Converter between callback-style ES5 code and async/await ES7 code",
+  "homepage": "https://github.com/alehander42/sigur",
+  "main": "dist/sigur.js",
+  "bin": {
+    "sigur": "./bin/sigur.js"
+  },
+  "version": "0.1.0",
+  "files": [
+    "bin",
+  ],
+  "engines": {
+    "node": ">=0.10.0"
+  },
+  "author": {
+    "name": "Alexander Ivanov",
+    "email": "alehander42@gmail.com"
+  },
+  "maintainers": [
+    {
+      "name": "Alexander Ivanov",
+      "email": "alehander42@gmail.com",
+      "web": "http://alehander42.me"
+    }
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/alehander42/sigur.git"
+  },
+  "bugs": {
+    "url": "https://github.com/alehander42/sigur/issues"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "lodash": "^3.10.0",
+    "falafel": "^1.2.0",
+    "acorn": "^2.7.0",
+    "acorn-es7-plugin": "^1.0.10"
+  },
+  "keywords": [
+    "ast",
+    "ecmascript",
+    "callback",
+    "javascript",
+    "async",
+    "await"
+  ],
+  "scripts": {
+  }
+}

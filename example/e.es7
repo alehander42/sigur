@@ -1,0 +1,16 @@
+function l(callback) {
+}
+
+async function cosn(q) {
+  return [2];
+}
+function loop(qs, callback) {
+  await qs.parallelEach(q => {
+    Person.generateStuff(q);
+  });
+  console.debug('z');
+  return;
+}
+var q = await l();
+var qs = await cosn(q);
+await loop(qs);
