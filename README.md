@@ -6,7 +6,7 @@ That's a simple library to help with that problem for ES5 code.
 
 ## what does it do
 
-It can convert js code between vanilla ES5 callbacks code and a valid ES5 `async/await` inspired syntax.
+It can convert js code between vanilla ES5 callbacks code and a representation using ES7 `async/await` syntax.
 
 It can be useful for visualizing how existing callbacks-style code would look with `async/await`-like syntax
 
