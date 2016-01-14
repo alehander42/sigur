@@ -6,9 +6,11 @@ That's a simple library to help with that problem for ES5 code.
 
 ## what does it do
 
-can convert js code between vanilla ES5 callbacks code and a valid ES5 `async/await` inspired syntax.
-can be useful for visualizing how existing callbacks-style code would look with `async/await`-like syntax
-it's tuned for the codebase I am currently working with, so there are some pretty special cases/assumptions in it
+It can convert js code between vanilla ES5 callbacks code and a valid ES5 `async/await` inspired syntax.
+
+It can be useful for visualizing how existing callbacks-style code would look with `async/await`-like syntax
+
+It's tuned for the codebase I am currently working with, so there are some pretty special cases/assumptions in it
 
 ## progress
 
@@ -43,7 +45,7 @@ async.waterfall([
 ]);
 ```
 
-is currently converted to
+is converted to
 
 ```javascript
 function l(callback) {
