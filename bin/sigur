@@ -266,7 +266,7 @@
             }
           ].concat(afterCode);
         case !this._isAsyncMethodCall(node, 'waterfall'):
-          return this.rewriteWaterfall(node["arguments"][0].elements, depth);
+          return this.rewriteWaterfall(node["arguments"][0].elements, node["arguments"][1], depth);
         case !this._isAsyncMethodCall(node, 'series'):
           return this.rewriteSeries(node["arguments"][0].elements, node["arguments"][1], depth);
         case !this._isParallelCallback(lastArg):
@@ -347,8 +347,8 @@
       }
     };
 
-    AsyncTranslator.prototype.rewriteWaterfall = function(calls, depth) {
-      var call, f, ind, rewrites;
+    AsyncTranslator.prototype.rewriteWaterfall = function(calls, callback, depth) {
+      var call, f, ind, rewrites, test;
       rewrites = [];
       ind = this._indent(depth);
       calls = _.map(calls, this._rewriteWaterfallCall);
@@ -377,7 +377,31 @@
         type: 'AwaitExpression',
         argument: call.source
       });
-      return rewrites;
+      if (callback && callback.type === 'FunctionExpression' && callback.body.body.length === 1 && callback.body.body[0].type === 'IfStatement') {
+        test = callback.body.body[0].test;
+        if (test.type === 'Identifier' && test.name === callback.params[0].name) {
+          return {
+            type: 'TryStatement',
+            block: {
+              type: 'BlockStatement',
+              body: rewrites
+            },
+            handler: {
+              type: 'CatchClause',
+              param: {
+                type: 'Identifier',
+                name: callback.params[0].name
+              },
+              body: callback.body.body[0].consequent
+            },
+            finalizer: null
+          };
+        } else {
+          return rewrites;
+        }
+      } else {
+        return rewrites;
+      }
     };
 
     AsyncTranslator.prototype._refactorSerie = function(func) {

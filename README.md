@@ -20,6 +20,7 @@ It's tuned for the codebase I am currently working with, so there are some prett
 - [x] converts `async.series` to series of `await` or to `var <name> = [await <expr1>, await .. ];`
 - [ ] converts `async.eachSeries` to `for(let )` with `await` expressions 
 - [x] converts one-expression functions in `async.series` and `async.waterfall` to just `await` expressions
+- [ ]  support error handling conversion from error callbacks to `try/catch` blocks
 
 ```javascript
 function l(callback) {

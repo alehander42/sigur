@@ -177,7 +177,7 @@ class AsyncTranslator
             ]
           }}].concat(afterCode)
       when this._isAsyncMethodCall(node, 'waterfall') # async waterfall
-        this.rewriteWaterfall(node.arguments[0].elements, depth)
+        this.rewriteWaterfall(node.arguments[0].elements, node.arguments[1], depth)
       when this._isAsyncMethodCall(node, 'series') # async series
         this.rewriteSeries(node.arguments[0].elements, node.arguments[1], depth)
       when this._isParallelCallback(lastArg)
@@ -230,7 +230,7 @@ class AsyncTranslator
     else
       throw "2789"
 
-  rewriteWaterfall: (calls, depth) =>
+  rewriteWaterfall: (calls, callback, depth) =>
     rewrites = []
     ind = this._indent(depth)
     calls = _.map(calls, this._rewriteWaterfallCall)
@@ -244,7 +244,21 @@ class AsyncTranslator
     f = {type: 'Identifier', name: @signatureIndex[call.name][0]}
     call.source.arguments = call.source.arguments.concat(f)
     rewrites.push({type: 'AwaitExpression', argument: call.source})
-    rewrites
+    if callback && callback.type == 'FunctionExpression' && callback.body.body.length == 1 && callback.body.body[0].type == 'IfStatement'
+      test = callback.body.body[0].test
+      if test.type == 'Identifier' && test.name == callback.params[0].name
+        type: 'TryStatement'
+        block: {type: 'BlockStatement', body: rewrites}
+        handler:
+          type: 'CatchClause'
+          param: {type: 'Identifier', name: callback.params[0].name}
+          body: callback.body.body[0].consequent
+        finalizer: null
+
+      else
+        rewrites
+    else
+      rewrites
 
   _refactorSerie: (func) =>
     @args.push(_.map(func.params, 'name'))
