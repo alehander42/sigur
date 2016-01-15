@@ -14,11 +14,12 @@ It's tuned for the codebase I am currently working with, so there are some prett
 
 ## progress
 
-* converts nested callbacks to series of `await`-s in `async`-annotated functions
-* converts some cases of `async.each` to `await parallelEach(iterator => code)` code
-* converts `async.waterfall` to series of `await` assignments
-* converts `async.series`, extracting one-expression functions to just expressions, to series of `await` or to `var <name> = [await <expr1>, await .. ];`
-* converts `async.eachSeries` to `for(let )` with `await` expressions 
+- [x] converts nested callbacks to series of `await`-s in `async`-annotated functions
+- [x] converts some cases of `async.each` to `await parallelEach(iterator => code)` code
+- [x] converts `async.waterfall` to series of `await` assignments
+- [ ] converts `async.series` to series of `await` or to `var <name> = [await <expr1>, await .. ];`
+- [ ] converts `async.eachSeries` to `for(let )` with `await` expressions 
+- [ ] converts one-expression functions in `async.series` and `async.waterfall` to just `await` expressions
 
 ```javascript
 function l(callback) {
