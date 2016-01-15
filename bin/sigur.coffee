@@ -9,6 +9,7 @@
 
 falafel = require('falafel')
 fs = require('fs')
+escodegen = require('escodegen')
 _ = require('lodash')
 
 asyncifyFile = (sourcePath, outputPath) ->
@@ -24,6 +25,8 @@ class AsyncTranslator
   constructor: () -> 
     @indentSize = 2
     @args = [] #contains current function stack arg names
+    @anonn = 0 #counter for anon waterfall functions
+    @asyncs = [] #contains flags for function stack asyncness
 
   translate: (source) =>
     @signatureIndex = this.indexSignatures(source)
@@ -34,7 +37,13 @@ class AsyncTranslator
         if node.type == 'FunctionDeclaration'
           node.update(this.rewriteFunction(node))
         else if node.parent && node.parent.type == 'Program'
-          node.update(this.rewriteBlock([node]).code))
+          node.update('\n' + _.map(this.rewriteBlock([node]), this.esGenerate).join('\n')))
+
+  esGenerate: (node) ->
+    # uses escodegen with some special settings
+    escodegen.generate(node, {
+      format: {indent: {style: '  '}},
+      comment: true})
 
   _source: (e) ->
     e.source()
@@ -51,21 +60,37 @@ class AsyncTranslator
 
   rewriteFunction: (node) =>
     @args.push(_.map(node.params, 'name'))
+    @asyncs.push(false)
     blockResult = this.rewriteBlock(node.body.body, 1)
+    node.async = @asyncs.pop
     @args.pop
-    if blockResult.isAsync
-     asyncStatus = 'async '
-     params = node.params.slice(0, -1)
-    else 
-      asyncStatus = ''
-      params = node.params
-      console.log(blockResult)
-    argCode = _.map(params, this._source).join(', ')
-    header = "#{asyncStatus}function #{node.id.name}(#{argCode}) {"
-    "#{header}\n#{blockResult.code}}\n"
+    node.params = node.params.slice(0, -1)
+    blockResult = this._cleanReturns(blockResult)
+    node.body = {type: 'BlockStatement', body: blockResult}
+    this.esGenerate(node)
 
   _isMongoose: (node) =>
     node.type == 'MemberExpression' && node.property.type == 'Identifier' && node.property.name == 'exec'
+
+  _cleanReturns: (block) ->
+    if block.length == 0
+      []
+    else if block.length == 1
+      if block[0].type == 'ReturnStatement' && block[0].argument == null
+        []
+      else
+        block
+    else
+      a = block[block.length - 2]
+      last = block[block.length - 1]
+      # console.log(a, last.type, last.argument, last.argument.type, a.type)
+      if last.type == 'ReturnStatement' && last.argument && last.argument.type == 'Identifier' &&
+         a.type == 'VariableDeclaration' && a.declarations[0].id.type == 'Identifier' && a.declarations[0].id.name == last.argument.name
+        block.slice(0, -2).concat({type: 'ReturnStatement', argument: a.declarations[0].init})
+      else if last.type == 'ReturnStatement' && last.argument == null
+        block.slice(0, -1)
+      else
+        block
 
   _isParallelCallback: (node) =>
     node && node.type == 'Identifier' && node.name == @parallelCallback
@@ -92,62 +117,137 @@ class AsyncTranslator
     result = {isAsync: false, code: ''}
     results = []
     ind = this._indent(depth)
-    nodes = this._simplifyExpressions(nodes)
-    for node in nodes
-      console.log(ind + 'node', node.source())
+    _.reduce(nodes, ((results, node) =>
+      results.concat(this._rewriteLine(node, depth))), [])
+
+  _ensureExpression: (t) ->
+    if t.type == 'ExpressionStatement' || !_.contains(t.type, 'Expression')
+      t
+    else
+      {type: 'ExpressionStatement', expression: t}
+
+  _rewriteLine: (node, depth) =>
+    if node.type == 'CallExpression'
       lastArg = _.last(node.arguments)
-      if node.type == 'CallExpression' && node.callee.type == 'MemberExpression' &&
-              node.callee.object.name == 'async' && node.callee.property.name == 'each' # async.each
+    switch
+      when node.type == 'ExpressionStatement'
+        s = this._rewriteLine(node.expression)
+        unless Array.isArray(s)
+          s = [s]
+        _.map(s, this._ensureExpression)
+      when node.type == 'BlockStatement'
+        {type: 'BlockStatement', body: _.map(node.body, (l) -> this._rewriteLine(this._rewriteLine, depth))}
+      when node.type == 'Identifier' && node.callee.name == @parallelCallback
+        [] # TODO raise an exception depending on error model
+      when node.type != 'CallExpression'
+        node
+      when node.callee.type == 'MemberExpression' && node.callee.object.name == 'async' &&
+           node.callee.property.name == 'each' # async.each
         block = node.arguments[1]
         @parallelCallback = block.params[1].name
-        blockCode = "\n" + this.rewriteBlock(block.body.body, depth + 1).code
-        afterCode = "\n" + this.rewriteBlock(lastArg.body.body, depth).code
+        block.body.body = this.rewriteBlock(block.body.body, depth + 1)
+        if lastArg.type == 'FunctionExpression'
+          afterCode = this.rewriteBlock(lastArg.body.body, depth)
+        else if lastArg.type == 'Identifier' && lastArg.name == _.last(_.last(@args))
+          afterCode = [{type: 'ReturnStatement', argument: null}]
+        else
+          afterCode = [this._rewriteLine(lastArg)]
         sequence = node.arguments[0].name
         iterator = node.arguments[1].params[0].name
 
-        result.isAsync = true
-        results.push("#{ind}await #{sequence}.parallelEach(#{iterator} => {#{blockCode}#{ind}});#{afterCode}")
-      else if node.type == 'CallExpression' && node.callee.type == 'MemberExpression' &&
-              node.callee.object.name == 'async' && node.callee.property.name == 'waterfall' # async watefall
-        results.push(this.rewriteWaterfall(node.arguments[0].elements, depth))
-      else if node.type == 'CallExpression' && this._isParallelCallback(lastArg)
-        argCode = _.map(node.arguments.slice(0, -1), this._source).join('\n')
-        results.push("#{ind}#{node.callee.source()}(#{argCode});")
-      else if node.type == 'CallExpression' && node.type == 'Identifier' && node.callee.name == @parallelCallback
-        2 # TODO raise an exception depending on error model
-      else if node.type == 'CallExpression' && this._isCallback(lastArg)
-        unless lastArg.type == 'FunctionExpression'
-          a = "#{ind}"
-        else
-          a = "#{ind}var #{_.last(lastArg.params).name} = "
+        @asyncs[@asyncs.length - 1] = true
+        [{
+          type: 'AwaitExpression',
+          argument: {
+            type: 'CallExpression',
+            callee: {
+              type: 'MemberExpression',
+              object: {type: 'Identifier', name: sequence},
+              property: {type: 'Identifier', name: 'parallelEach'}
+            },
+            arguments: [
+              {
+                type: 'ArrowFunctionExpression',
+                id: null,
+                body: block.body,
+                params: [{type: 'Identifier', name: iterator}]
+              }
+            ]
+          }}].concat(afterCode)
+      when node.callee.type == 'MemberExpression' && node.callee.object.name == 'async' &&
+              node.callee.property.name == 'waterfall' # async watefall
+        this.rewriteWaterfall(node.arguments[0].elements, depth)
+      when this._isParallelCallback(lastArg)
+        node.arguments = node.arguments.slice(0, -1)
+        node
+      when this._isCallback(lastArg)
+        
         if this._isMongoose(node.callee)
-          callee = node.callee.object
-          argCode = ''
+          node = node.callee.object
+          node.arguments = []
         else
-          callee = node.callee
-          argCode = '(' + _.map(node.arguments.slice(0, -1), this._source).join(', ') + ')'
-        results.push("#{a}await #{callee.source()}#{argCode};")
-        results.push(this.rewriteBlock(_.last(node.arguments).body.body, depth).code)
-        result.isAsync = true
-      else if this._isCallToArgCallback(node)
-        results.push("#{ind}return#{if lastArg then ' ' + lastArg.source() else ''};")
-        result.isAsync = true
-      else
-        results.push("#{ind}#{node.source()};\n")
-    result.code = results.join('\n') + '\n'
-    result
+          node.arguments = node.arguments.slice(0, -1)
 
+        @asyncs[@asyncs.length - 1] = true
+        await = {type: 'AwaitExpression', argument: node}
+        expression = unless lastArg.type == 'FunctionExpression'
+          await
+        else
+          type: 'VariableDeclaration'
+          kind: 'let'
+          declarations: [
+            type: 'VariableDeclarator'
+            id: {type: 'Identifier', name: _.last(lastArg.params).name}
+            init: await]
+        [expression].concat(this.rewriteBlock(lastArg.body.body, depth))
+
+
+      when this._isCallToArgCallback(node)
+        @asyncs[@asyncs.length - 1] = true
+        {type: 'ReturnStatement', argument: if lastArg then lastArg else null}
+      else
+        node
+    
+  _rewriteWaterfallCall: (call) =>
+    if call.type == 'Identifier'
+      {name: call.name, source: {type: 'CallExpression', callee: call, arguments: []}}
+    else if call.type == 'CallExpression' && call.callee.type == 'MemberExpression' &&
+            call.callee.object.type == 'Identifier' && call.callee.object.name == 'async' && 
+            call.callee.property.name == 'apply'
+      call.callee = call.arguments[0]
+      call.arguments = call.arguments.slice(1)
+      {name: call.arguments[0].name, source: call}
+    else if call.type == 'FunctionExpression'
+      @signatureIndex[String(@anonn)] = _.map(call.params, 'name')
+      @anonn += 1
+      {name: String(@anonn - 1), source: {type: 'CallExpression', callee: call, arguments: []}}
+    else
+      throw "2789"
 
   rewriteWaterfall: (calls, depth) =>
     rewrites = []
     ind = this._indent(depth)
+    calls = _.map(calls, this._rewriteWaterfallCall)
     _.each(_.zip(calls.slice(0, -1), calls.slice(1)), ([call, nextCall], j) =>
-      f = if j == 0 then '' else @signatureIndex[call.name][0]
+      f = if j == 0 then [] else {type: 'Identifier', name: @signatureIndex[call.name][0]}
       console.log('F', f, j, call.name, @signatureIndex)
-      rewrites.push("#{ind}var #{@signatureIndex[nextCall.name][0]} = await #{call.source()}(#{f});"))
-    f = @signatureIndex[_.last(calls).name][0]
-    rewrites.push("#{ind}await #{_.last(calls).source()}(#{f});")
-    rewrites.join('\n') + '\n'
+      call.source.arguments = call.source.arguments.concat(f)
+      rewrites.push(
+        type: 'VariableDeclaration'
+        kind: 'let'
+        declarations: [
+          type: 'VariableDeclarator'
+          id: {type: 'Identifier', name: @signatureIndex[nextCall.name][0]},
+          init: 
+            {type: 'AwaitExpression', argument: call.source}]))
+
+      
+
+    call = _.last(calls)
+    f = {type: 'Identifier', name: @signatureIndex[call.name][0]}
+    call.source.arguments = call.source.arguments.concat(f)
+    rewrites.push({type: 'AwaitExpression', argument: call.source})
+    rewrites
 
 sourcePath = process.argv[2]
 outputPath = sourcePath.replace(/\.js$/, '.es7')

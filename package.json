@@ -36,7 +36,8 @@
     "lodash": "^3.10.0",
     "falafel": "^1.2.0",
     "acorn": "^2.7.0",
-    "acorn-es7-plugin": "^1.0.10"
+    "acorn-es7-plugin": "^1.0.10",
+    "escodegen": "^1.8.0"
   },
   "keywords": [
     "ast",
