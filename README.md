@@ -6,7 +6,7 @@ That's a simple library to help with that problem for ES5 code.
 
 ## what does it do
 
-It can convert js code between vanilla ES5 callbacks code and a valid ES5 `async/await` inspired syntax.
+It can convert js code between vanilla ES5 callbacks code and a representation using ES7 `async/await` syntax.
 
 It can be useful for visualizing how existing callbacks-style code would look with `async/await`-like syntax
 
@@ -17,6 +17,8 @@ It's tuned for the codebase I am currently working with, so there are some prett
 * converts nested callbacks to series of `await`-s in `async`-annotated functions
 * converts some cases of `async.each` to `await parallelEach(iterator => code)` code
 * converts `async.waterfall` to series of `await` assignments
+* converts `async.series`, extracting one-expression functions to just expressions, to series of `await` or to `var <name> = [await <expr1>, await .. ];`
+* converts `async.eachSeries` to `for(let )` with `await` expressions 
 
 ```javascript
 function l(callback) {
