@@ -1,0 +1,6 @@
+
+let results = [
+  await E.find(),
+  await E1.find().select()
+];
+console.log(results);

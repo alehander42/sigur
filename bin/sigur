@@ -26,6 +26,8 @@
 
   AsyncTranslator = (function() {
     function AsyncTranslator() {
+      this.rewriteSeries = bind(this.rewriteSeries, this);
+      this._refactorSerie = bind(this._refactorSerie, this);
       this.rewriteWaterfall = bind(this.rewriteWaterfall, this);
       this._rewriteWaterfallCall = bind(this._rewriteWaterfallCall, this);
       this._rewriteLine = bind(this._rewriteLine, this);
@@ -185,6 +187,10 @@
       }
     };
 
+    AsyncTranslator.prototype._isAsyncMethodCall = function(node, method) {
+      return node.callee.type === 'MemberExpression' && node.callee.object.name === 'async' && node.callee.property.name === method;
+    };
+
     AsyncTranslator.prototype._rewriteLine = function(node, depth) {
       var afterCode, await, block, expression, iterator, lastArg, s, sequence;
       if (node.type === 'CallExpression') {
@@ -208,7 +214,7 @@
           return [];
         case node.type === 'CallExpression':
           return node;
-        case !(node.callee.type === 'MemberExpression' && node.callee.object.name === 'async' && node.callee.property.name === 'each'):
+        case !this._isAsyncMethodCall(node, 'each'):
           block = node["arguments"][1];
           this.parallelCallback = block.params[1].name;
           block.body.body = this.rewriteBlock(block.body.body, depth + 1);
@@ -259,8 +265,10 @@
               }
             }
           ].concat(afterCode);
-        case !(node.callee.type === 'MemberExpression' && node.callee.object.name === 'async' && node.callee.property.name === 'waterfall'):
+        case !this._isAsyncMethodCall(node, 'waterfall'):
           return this.rewriteWaterfall(node["arguments"][0].elements, depth);
+        case !this._isAsyncMethodCall(node, 'series'):
+          return this.rewriteSeries(node["arguments"][0].elements, node["arguments"][1], depth);
         case !this._isParallelCallback(lastArg):
           node["arguments"] = node["arguments"].slice(0, -1);
           return node;
@@ -276,20 +284,7 @@
             type: 'AwaitExpression',
             argument: node
           };
-          expression = lastArg.type !== 'FunctionExpression' ? await : {
-            type: 'VariableDeclaration',
-            kind: 'let',
-            declarations: [
-              {
-                type: 'VariableDeclarator',
-                id: {
-                  type: 'Identifier',
-                  name: _.last(lastArg.params).name
-                },
-                init: await
-              }
-            ]
-          };
+          expression = lastArg.type !== 'FunctionExpression' ? await : this._variableAssignment(_.last(lastArg.params).name, await);
           return [expression].concat(this.rewriteBlock(lastArg.body.body, depth));
         case !this._isCallToArgCallback(node):
           this.asyncs[this.asyncs.length - 1] = true;
@@ -300,6 +295,23 @@
         default:
           return node;
       }
+    };
+
+    AsyncTranslator.prototype._variableAssignment = function(name, init) {
+      return {
+        type: 'VariableDeclaration',
+        kind: 'let',
+        declarations: [
+          {
+            type: 'VariableDeclarator',
+            id: {
+              type: 'Identifier',
+              name: name
+            },
+            init: init
+          }
+        ]
+      };
     };
 
     AsyncTranslator.prototype._rewriteWaterfallCall = function(call) {
@@ -348,24 +360,10 @@
             type: 'Identifier',
             name: _this.signatureIndex[call.name][0]
           };
-          console.log('F', f, j, call.name, _this.signatureIndex);
           call.source["arguments"] = call.source["arguments"].concat(f);
-          return rewrites.push({
-            type: 'VariableDeclaration',
-            kind: 'let',
-            declarations: [
-              {
-                type: 'VariableDeclarator',
-                id: {
-                  type: 'Identifier',
-                  name: _this.signatureIndex[nextCall.name][0]
-                },
-                init: {
-                  type: 'AwaitExpression',
-                  argument: call.source
-                }
-              }
-            ]
+          return rewrites.push(_this._variableAssignment(_this.signatureIndex[nextCall.name][0]), {
+            type: 'AwaitExpression',
+            argument: call.source
           });
         };
       })(this));
@@ -380,6 +378,43 @@
         argument: call.source
       });
       return rewrites;
+    };
+
+    AsyncTranslator.prototype._refactorSerie = function(func) {
+      var body;
+      this.args.push(_.map(func.params, 'name'));
+      body = this._cleanReturns(this.rewriteBlock(func.body.body, 0));
+      this.args.pop;
+      if (body.length === 1 && body[0].type === 'ReturnStatement') {
+        return body[0].argument;
+      } else {
+        func.body.body = body;
+        func.params = [];
+        return {
+          type: 'AwaitExpression',
+          argument: {
+            type: 'CallExpression',
+            callee: func,
+            "arguments": []
+          }
+        };
+      }
+    };
+
+    AsyncTranslator.prototype.rewriteSeries = function(functions, endCallback) {
+      var assignment, body, list, refactored;
+      refactored = _.map(functions, this._refactorSerie);
+      if (endCallback) {
+        list = {
+          type: 'ArrayExpression',
+          elements: refactored
+        };
+        assignment = this._variableAssignment(endCallback.params[1].name, list);
+        body = this.rewriteBlock(endCallback.body.body, 0);
+        return [assignment].concat(body);
+      } else {
+        return refactored;
+      }
     };
 
     return AsyncTranslator;
