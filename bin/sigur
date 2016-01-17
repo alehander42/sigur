@@ -30,12 +30,15 @@
       this._refactorSerie = bind(this._refactorSerie, this);
       this.rewriteWaterfall = bind(this.rewriteWaterfall, this);
       this._rewriteWaterfallCall = bind(this._rewriteWaterfallCall, this);
+      this._variableAssignment = bind(this._variableAssignment, this);
       this._rewriteLine = bind(this._rewriteLine, this);
       this.rewriteBlock = bind(this.rewriteBlock, this);
       this._isCallbackName = bind(this._isCallbackName, this);
       this._isCallback = bind(this._isCallback, this);
       this._isCallToArgCallback = bind(this._isCallToArgCallback, this);
       this._isParallelCallback = bind(this._isParallelCallback, this);
+      this._applyPattern = bind(this._applyPattern, this);
+      this._detectErrorPattern = bind(this._detectErrorPattern, this);
       this._isMongoose = bind(this._isMongoose, this);
       this.rewriteFunction = bind(this.rewriteFunction, this);
       this.indexSignatures = bind(this.indexSignatures, this);
@@ -44,6 +47,9 @@
       this.args = [];
       this.anonn = 0;
       this.asyncs = [];
+      this.names = [];
+      this.errorPattern = null;
+      this.errorCount = 0;
     }
 
     AsyncTranslator.prototype.translate = function(source) {
@@ -93,20 +99,108 @@
       var blockResult;
       this.args.push(_.map(node.params, 'name'));
       this.asyncs.push(false);
+      this.names.push({});
+      if (node.id) {
+        this._detectErrorPattern(node);
+      }
       blockResult = this.rewriteBlock(node.body.body, 1);
       node.async = this.asyncs.pop;
       this.args.pop;
+      this.names.pop;
       node.params = node.params.slice(0, -1);
       blockResult = this._cleanReturns(blockResult);
       node.body = {
         type: 'BlockStatement',
         body: blockResult
       };
+      if (this.errorCount > 0) {
+        node.body = {
+          type: 'BlockStatement',
+          body: [
+            {
+              type: 'TryStatement',
+              block: node.body,
+              handler: {
+                type: 'CatchClause',
+                param: {
+                  type: 'Identifier',
+                  name: 'err'
+                },
+                body: {
+                  type: 'BlockStatement',
+                  body: [this.errorPattern]
+                }
+              },
+              finalizer: null
+            }
+          ]
+        };
+      }
       return this.esGenerate(node);
     };
 
     AsyncTranslator.prototype._isMongoose = function(node) {
       return node.type === 'MemberExpression' && node.property.type === 'Identifier' && node.property.name === 'exec';
+    };
+
+    AsyncTranslator.prototype._detectErrorPattern = function(node) {
+      return falafel(node.source(), (function(_this) {
+        return function(n) {
+          var errorPattern, o, r;
+          if (n.type === 'IfStatement' && n.test.type === 'Identifier' && n.test.name === 'err' && n.consequent.body.length === 1) {
+            if (n.consequent.body[0].type === 'ReturnStatement' && (n.consequent.body[0].argument.type === 'CallExpression' || n.consequent.body[0].argument.type === 'Identifier')) {
+              o = n.consequent.body[0].argument;
+              r = true;
+            } else {
+              o = n.consequent.body[0];
+              r = false;
+            }
+            if (o.type === 'CallExpression' && o.callee.type === 'Identifier' && o["arguments"].length === 1 && o["arguments"][0].type === 'Identifier' && o["arguments"][0].name === 'err') {
+              errorPattern = o;
+              errorPattern.matches = function(e) {
+                return e.type === 'CallExpression' && e.callee.type === 'Identifier' && e.callee.name === o.callee.name && e["arguments"].length === 1;
+              };
+              errorPattern.errorSigur = function(e) {
+                return e["arguments"][0];
+              };
+            } else if (o.type === 'Identifier' && o.name === 'err') {
+              errorPattern = o;
+              errorPattern.matches = function(e) {
+                return true;
+              };
+              errorPattern.errorSigur = function(e) {
+                return e;
+              };
+            } else {
+              _this.errorPattern = null;
+              return;
+            }
+            if (r) {
+              _this.errorPattern = {
+                type: 'ReturnStatement',
+                argument: o
+              };
+              _this.errorPattern.matches = function(e) {
+                return e.type === 'ReturnStatement' && errorPattern.matches(e.argument);
+              };
+              return _this.errorPattern.errorSigur = function(e) {
+                return errorPattern.errorSigur(e.argument);
+              };
+            } else {
+              return _this.errorPattern = errorPattern;
+            }
+          }
+        };
+      })(this));
+    };
+
+    AsyncTranslator.prototype._applyPattern = function(expression) {
+      return [
+        {
+          type: 'ThrowStatement',
+          argument: expression
+        }
+      ];
     };
 
     AsyncTranslator.prototype._cleanReturns = function(block) {
@@ -191,8 +285,22 @@
       return node.callee.type === 'MemberExpression' && node.callee.object.name === 'async' && node.callee.property.name === method;
     };
 
+    AsyncTranslator.prototype._matchesErrorPattern = function(node) {
+      return this.errorPattern.matches(node);
+    };
+
     AsyncTranslator.prototype._rewriteLine = function(node, depth) {
-      var afterCode, await, block, expression, iterator, lastArg, s, sequence;
+      var afterCode, alt, await, block, expression, iterator, lastArg, s, sequence;
+      if (node.type === 'ReturnStatement') {
+        console.log('s');
+      }
+      if (this.errorPattern !== null && this._matchesErrorPattern(node)) {
+        this.errorCount += 1;
+        return this._applyPattern(this.errorPattern.errorSigur(node));
+      } else if (node.type === 'IfStatement' && node.test.type === 'Identifier' && this.errorPattern !== null && this._matchesErrorPattern(node.consequent.body[0]) && this.errorPattern.errorSigur(node.consequent.body[0]).type === 'Identifier' && this.errorPattern.errorSigur(node.consequent.body[0]).name === node.test.name) {
+        this.errorCount += 1;
+        return [];
+      }
       if (node.type === 'CallExpression') {
         lastArg = _.last(node["arguments"]);
       }
@@ -206,14 +314,29 @@
         case node.type !== 'BlockStatement':
           return {
             type: 'BlockStatement',
-            body: _.map(node.body, function(l) {
-              return this._rewriteLine(this._rewriteLine, depth);
-            })
+            body: _.reduce(node.body, (function(_this) {
+              return function(a, l) {
+                return a.concat(_this._rewriteLine(l, depth));
+              };
+            })(this), [])
           };
         case !(node.type === 'Identifier' && node.callee.name === this.parallelCallback):
           return [];
         case node.type === 'CallExpression':
-          return node;
+          if (node.type === 'IfStatement') {
+            node.consequent.body = this.rewriteBlock(node.consequent.body, depth + 1);
+            if (node.alternate) {
+              alt = this._rewriteLine(node.alternate, depth);
+              if (Array.isArray(alt)) {
+                alt = alt[0];
+              }
+              node.alternate = alt;
+            }
+            return node;
+          } else {
+            return node;
+          }
+          break;
         case !this._isAsyncMethodCall(node, 'each'):
           block = node["arguments"][1];
           this.parallelCallback = block.params[1].name;
@@ -284,8 +407,8 @@
             type: 'AwaitExpression',
             argument: node
           };
-          expression = lastArg.type !== 'FunctionExpression' ? await : this._variableAssignment(_.last(lastArg.params).name, await);
-          return [expression].concat(this.rewriteBlock(lastArg.body.body, depth));
+          expression = lastArg.type !== 'FunctionExpression' ? [await] : this._variableAssignment(_.map(lastArg.params.slice(1), 'name'), await);
+          return expression.concat(this.rewriteBlock(lastArg.body.body, depth));
         case !this._isCallToArgCallback(node):
           this.asyncs[this.asyncs.length - 1] = true;
           return {
@@ -297,21 +420,79 @@
       }
     };
 
-    AsyncTranslator.prototype._variableAssignment = function(name, init) {
-      return {
-        type: 'VariableDeclaration',
-        kind: 'let',
-        declarations: [
-          {
-            type: 'VariableDeclarator',
-            id: {
-              type: 'Identifier',
-              name: name
-            },
-            init: init
-          }
-        ]
-      };
+    AsyncTranslator.prototype._variableAssignment = function(names, init) {
+      var fNames, i, len, name, u, undeclared;
+      fNames = _.last(this.names);
+      if (names.length === 1) {
+        if (fNames[names[0]] !== void 0) {
+          return [
+            {
+              type: 'AssignmentExpression',
+              operator: '=',
+              left: {
+                type: 'Identifier',
+                name: names[0]
+              },
+              right: init
+            }
+          ];
+        } else {
+          fNames[names[0]] = true;
+          return [
+            {
+              type: 'VariableDeclaration',
+              kind: 'var',
+              declarations: [
+                {
+                  type: 'VariableDeclarator',
+                  id: {
+                    type: 'Identifier',
+                    name: names[0]
+                  },
+                  init: init
+                }
+              ]
+            }
+          ];
+        }
+      } else {
+        undeclared = _.select(names, function(name) {
+          return fNames[name] === void 0;
+        });
+        for (i = 0, len = undeclared.length; i < len; i++) {
+          name = undeclared[i];
+          fNames[name] = true;
+        }
+        u = [];
+        if (undeclared.length > 0) {
+          u = [
+            {
+              type: 'VariableDeclaration',
+              kind: 'var',
+              declarations: _.map(undeclared, function(name) {
+                return {
+                  type: 'VariableDeclarator',
+                  id: {
+                    type: 'Identifier',
+                    name: name
+                  },
+                  init: null
+                };
+              })
+            }
+          ];
+        }
+        u.push({
+          type: 'AssignmentExpression',
+          operator: '=',
+          left: {
+            type: 'Identifier',
+            name: "[" + (names.join(', ')) + "]"
+          },
+          right: init
+        });
+        return u;
+      }
     };
 
     AsyncTranslator.prototype._rewriteWaterfallCall = function(call) {
@@ -361,10 +542,10 @@
             name: _this.signatureIndex[call.name][0]
           };
           call.source["arguments"] = call.source["arguments"].concat(f);
-          return rewrites.push(_this._variableAssignment(_this.signatureIndex[nextCall.name][0]), {
+          return rewrites = rewrites.concat(_this._variableAssignment([_this.signatureIndex[nextCall.name][0]], {
             type: 'AwaitExpression',
             argument: call.source
-          });
+          }));
         };
       })(this));
       call = _.last(calls);
@@ -433,9 +614,9 @@
           type: 'ArrayExpression',
           elements: refactored
         };
-        assignment = this._variableAssignment(endCallback.params[1].name, list);
+        assignment = this._variableAssignment([endCallback.params[1].name], list);
         body = this.rewriteBlock(endCallback.body.body, 0);
-        return [assignment].concat(body);
+        return assignment.concat(body);
       } else {
         return refactored;
       }

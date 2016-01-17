@@ -27,6 +27,9 @@ class AsyncTranslator
     @args = [] #contains current function stack arg names
     @anonn = 0 #counter for anon waterfall functions
     @asyncs = [] #contains flags for function stack asyncness
+    @names = [] #vars defined in a functions
+    @errorPattern = null # contains a pattern that is updated to throw
+    @errorCount = 0
 
   translate: (source) =>
     @signatureIndex = this.indexSignatures(source)
@@ -61,16 +64,69 @@ class AsyncTranslator
   rewriteFunction: (node) =>
     @args.push(_.map(node.params, 'name'))
     @asyncs.push(false)
+    @names.push({})
+    if node.id
+      this._detectErrorPattern(node)
     blockResult = this.rewriteBlock(node.body.body, 1)
     node.async = @asyncs.pop
     @args.pop
+    @names.pop
     node.params = node.params.slice(0, -1)
     blockResult = this._cleanReturns(blockResult)
     node.body = {type: 'BlockStatement', body: blockResult}
+    if @errorCount > 0
+      node.body =
+        type: 'BlockStatement'
+        body: [
+          type: 'TryStatement'
+          block: node.body
+          handler:
+            type: 'CatchClause'
+            param: {type: 'Identifier', name: 'err'}
+            body: {type: 'BlockStatement', body: [@errorPattern]}
+          finalizer: null]
+
     this.esGenerate(node)
 
   _isMongoose: (node) =>
     node.type == 'MemberExpression' && node.property.type == 'Identifier' && node.property.name == 'exec'
+
+  _detectErrorPattern: (node) =>
+    falafel(node.source(), (n) =>
+      if n.type == 'IfStatement' and n.test.type == 'Identifier' and n.test.name == 'err' and
+         n.consequent.body.length == 1
+        if n.consequent.body[0].type == 'ReturnStatement' and (n.consequent.body[0].argument.type == 'CallExpression' or n.consequent.body[0].argument.type == 'Identifier')
+          o = n.consequent.body[0].argument
+          r = true
+        else
+          o = n.consequent.body[0]
+          r = false
+        if o.type == 'CallExpression' and o.callee.type == 'Identifier' and o.arguments.length == 1 and o.arguments[0].type == 'Identifier' and o.arguments[0].name == 'err'
+          errorPattern = o
+          errorPattern.matches = (e) ->
+            e.type == 'CallExpression' and e.callee.type == 'Identifier' and e.callee.name == o.callee.name and
+            e.arguments.length == 1
+          errorPattern.errorSigur = (e) ->
+            e.arguments[0]
+        else if o.type == 'Identifier' and o.name == 'err'
+          errorPattern = o
+          errorPattern.matches = (e) -> true
+          errorPattern.errorSigur = (e) -> e
+        else
+          @errorPattern = null
+          return
+        if r
+          @errorPattern = {type: 'ReturnStatement', argument: o}
+          @errorPattern.matches = (e) ->
+            e.type == 'ReturnStatement' and errorPattern.matches(e.argument)
+          @errorPattern.errorSigur = (e) ->
+            errorPattern.errorSigur(e.argument)
+        else
+          @errorPattern = errorPattern)
+
+  _applyPattern: (expression) =>
+    # console.log(expression)
+    [{type: 'ThrowStatement', argument: expression}]
 
   _cleanReturns: (block) ->
     if block.length == 0
@@ -129,7 +185,21 @@ class AsyncTranslator
     node.callee.type == 'MemberExpression' && node.callee.object.name == 'async' &&
       node.callee.property.name == method
 
+  _matchesErrorPattern: (node) ->
+    @errorPattern.matches(node)
+
   _rewriteLine: (node, depth) =>
+    if node.type == 'ReturnStatement'
+      console.log('s')
+    if @errorPattern != null and this._matchesErrorPattern(node)
+      @errorCount += 1
+      return this._applyPattern(@errorPattern.errorSigur(node))
+    else if node.type == 'IfStatement' and node.test.type == 'Identifier' and
+            @errorPattern != null and
+            this._matchesErrorPattern(node.consequent.body[0]) and
+            @errorPattern.errorSigur(node.consequent.body[0]).type == 'Identifier' and @errorPattern.errorSigur(node.consequent.body[0]).name == node.test.name
+      @errorCount += 1
+      return [] # as if the upper call throw the error
     if node.type == 'CallExpression'
       lastArg = _.last(node.arguments)
     switch
@@ -139,11 +209,23 @@ class AsyncTranslator
           s = [s]
         _.map(s, this._ensureExpression)
       when node.type == 'BlockStatement'
-        {type: 'BlockStatement', body: _.map(node.body, (l) -> this._rewriteLine(this._rewriteLine, depth))}
+        {type: 'BlockStatement', body: _.reduce(
+          node.body,
+          (a, l) => a.concat(this._rewriteLine(l, depth)),
+          [])}
       when node.type == 'Identifier' && node.callee.name == @parallelCallback
         [] # TODO raise an exception depending on error model
       when node.type != 'CallExpression'
-        node
+        if node.type == 'IfStatement'
+          node.consequent.body = this.rewriteBlock(node.consequent.body, depth + 1)
+          if node.alternate
+            alt = this._rewriteLine(node.alternate, depth)
+            if Array.isArray(alt)
+              alt = alt[0]
+            node.alternate = alt
+          node
+        else
+          node
       when this._isAsyncMethodCall(node, 'each') # async.each
         block = node.arguments[1]
         @parallelCallback = block.params[1].name
@@ -194,10 +276,10 @@ class AsyncTranslator
         @asyncs[@asyncs.length - 1] = true
         await = {type: 'AwaitExpression', argument: node}
         expression = unless lastArg.type == 'FunctionExpression'
-          await
+          [await]
         else
-          this._variableAssignment(_.last(lastArg.params).name, await)
-        [expression].concat(this.rewriteBlock(lastArg.body.body, depth))
+          this._variableAssignment(_.map(lastArg.params.slice(1), 'name'), await)
+        expression.concat(this.rewriteBlock(lastArg.body.body, depth))
 
 
       when this._isCallToArgCallback(node)
@@ -206,13 +288,53 @@ class AsyncTranslator
       else
         node
 
-  _variableAssignment: (name, init) ->
-    type: 'VariableDeclaration'
-    kind: 'let'
-    declarations: [
-      type: 'VariableDeclarator'
-      id: {type: 'Identifier', name: name}
-      init: init]
+  _variableAssignment: (names, init) =>
+    fNames = _.last(@names)
+    if names.length == 1
+      if fNames[names[0]] != undefined
+        [
+         type: 'AssignmentExpression'
+         operator: '='
+         left: {type: 'Identifier', name: names[0]}
+         right: init]
+      else
+        fNames[names[0]] = true
+        [
+         type: 'VariableDeclaration'
+         kind: 'var'
+         declarations: [
+           type: 'VariableDeclarator'
+           id: {type: 'Identifier', name: names[0]}
+           init: init]]
+    else
+      undeclared = _.select(names, (name) -> fNames[name] == undefined)
+      for name in undeclared
+        fNames[name] = true
+      u = []
+      if undeclared.length > 0
+        u = [
+         type: 'VariableDeclaration'
+         kind: 'var'
+         declarations: _.map(undeclared, 
+          (name) ->
+           type: 'VariableDeclarator'
+           id: {type: 'Identifier', name: name}
+           init: null)]
+      u.push(
+        type: 'AssignmentExpression'
+        operator: '='
+        left: 
+          type: 'Identifier'
+          name: "[#{names.join(', ')}]"
+        right: init)
+      # escodegen displays it weirdly u.push(
+      #   type: 'AssignmentExpression'
+      #   operator: '='
+      #   left:
+      #     type: 'ArrayExpression'
+      #     elements: _.map(names, (name) -> {type: 'Identifier', name: name})
+      #   right: init)
+      u
 
   _rewriteWaterfallCall: (call) =>
     if call.type == 'Identifier'
@@ -238,8 +360,8 @@ class AsyncTranslator
       f = if j == 0 then [] else {type: 'Identifier', name: @signatureIndex[call.name][0]}
       # console.log('F', f, j, call.name, @signatureIndex)
       call.source.arguments = call.source.arguments.concat(f)
-      rewrites.push(this._variableAssignment(@signatureIndex[nextCall.name][0]),
-                    {type: 'AwaitExpression', argument: call.source}))
+      rewrites = rewrites.concat(this._variableAssignment([@signatureIndex[nextCall.name][0]],
+                    {type: 'AwaitExpression', argument: call.source})))
     call = _.last(calls)
     f = {type: 'Identifier', name: @signatureIndex[call.name][0]}
     call.source.arguments = call.source.arguments.concat(f)
@@ -254,7 +376,6 @@ class AsyncTranslator
           param: {type: 'Identifier', name: callback.params[0].name}
           body: callback.body.body[0].consequent
         finalizer: null
-
       else
         rewrites
     else
@@ -282,9 +403,9 @@ class AsyncTranslator
     refactored = _.map(functions, this._refactorSerie)
     if endCallback
       list = {type: 'ArrayExpression', elements: refactored}
-      assignment = this._variableAssignment(endCallback.params[1].name, list)
+      assignment = this._variableAssignment([endCallback.params[1].name], list)
       body = this.rewriteBlock(endCallback.body.body, 0)
-      [assignment].concat(body)
+      assignment.concat(body)
     else
       refactored
 
